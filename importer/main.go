@@ -29,10 +29,32 @@ func main() {
 	// GitHub username to query
 	username := os.Getenv("TARGET_USERNAME")
 
-	// Fetching starred repositories
-	var query struct {
+	// Fetching organizations
+	var orgQuery struct {
 		User struct {
-			StarredRepositories struct {
+			Organizations struct {
+				Nodes []struct {
+					Login string
+				}
+			} `graphql:"organizations(first: 100)"`
+		} `graphql:"user(login: $username)"`
+	}
+	orgVariables := map[string]interface{}{
+		"username": githubv4.String(username),
+	}
+	var orgNames []string
+	err := client.Query(ctx, &orgQuery, orgVariables)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, org := range orgQuery.User.Organizations.Nodes {
+		orgNames = append(orgNames, org.Login)
+	}
+
+	// Fetching repositories for each organization
+	var query struct {
+		Organization struct {
+			Repositories struct {
 				Nodes []struct {
 					Name  string
 					Owner struct {
@@ -54,16 +76,8 @@ func main() {
 						}
 					} `graphql:"releases(first: 1, orderBy: {field: CREATED_AT, direction: DESC})"`
 				}
-				PageInfo struct {
-					EndCursor   githubv4.String
-					HasNextPage bool
-				}
-			} `graphql:"starredRepositories(first: 100, after: $cursor)"`
-		} `graphql:"user(login: $username)"`
-	}
-	variables := map[string]interface{}{
-		"username": githubv4.String(username),
-		"cursor":   (*githubv4.String)(nil),
+			} `graphql:"repositories(first: 100)"`
+		} `graphql:"organization(login: $orgName)"`
 	}
 	var repositories []struct {
 		Name           string
@@ -74,12 +88,15 @@ func main() {
 		Topics         []string
 		TagName        string
 	}
-	for {
+	for _, orgName := range orgNames {
+		variables := map[string]interface{}{
+			"orgName": githubv4.String(orgName),
+		}
 		err := client.Query(ctx, &query, variables)
 		if err != nil {
 			log.Fatal(err)
 		}
-		for _, node := range query.User.StarredRepositories.Nodes {
+		for _, node := range query.Organization.Repositories.Nodes {
 			topics := make([]string, 0, len(node.RepositoryTopics.Nodes))
 			for _, topic := range node.RepositoryTopics.Nodes {
 				topics = append(topics, topic.Topic.Name)
@@ -106,10 +123,69 @@ func main() {
 				TagName:        tagName,
 			})
 		}
-		if !query.User.StarredRepositories.PageInfo.HasNextPage {
-			break
+	}
+
+	// Fetching starred repositories
+	var starredQuery struct {
+		User struct {
+			StarredRepositories struct {
+				Nodes []struct {
+					Name  string
+					Owner struct {
+						Login string
+					}
+					StargazerCount   int
+					URL              string
+					Description      string
+					RepositoryTopics struct {
+						Nodes []struct {
+							Topic struct {
+								Name string
+							}
+						}
+					} `graphql:"repositoryTopics(first: 10)"`
+					Releases struct {
+						Nodes []struct {
+							TagName string
+						}
+					} `graphql:"releases(first: 1, orderBy: {field: CREATED_AT, direction: DESC})"`
+				}
+			} `graphql:"starredRepositories(first: 100)"`
+		} `graphql:"user(login: $username)"`
+	}
+	starredVariables := map[string]interface{}{
+		"username": githubv4.String(username),
+	}
+	err = client.Query(ctx, &starredQuery, starredVariables)
+	if err != nil {
+		log.Fatal(err)
+	}
+	for _, node := range starredQuery.User.StarredRepositories.Nodes {
+		topics := make([]string, 0, len(node.RepositoryTopics.Nodes))
+		for _, topic := range node.RepositoryTopics.Nodes {
+			topics = append(topics, topic.Topic.Name)
 		}
-		variables["cursor"] = githubv4.NewString(query.User.StarredRepositories.PageInfo.EndCursor)
+		tagName := ""
+		if len(node.Releases.Nodes) > 0 {
+			tagName = node.Releases.Nodes[0].TagName
+		}
+		repositories = append(repositories, struct {
+			Name           string
+			Owner          string
+			StargazerCount int
+			URL            string
+			Description    string
+			Topics         []string
+			TagName        string
+		}{
+			Name:           node.Name,
+			Owner:          node.Owner.Login,
+			StargazerCount: node.StargazerCount,
+			URL:            node.URL,
+			Description:    node.Description,
+			Topics:         topics,
+			TagName:        tagName,
+		})
 	}
 
 	// Indexing data into Meilisearch
