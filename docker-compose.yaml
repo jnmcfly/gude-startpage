@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  importer:
+    image: local/importer
+    depends_on:
+      - meilisearch
+    build:
+      dockerfile: Dockerfile
+      context: ./importer
+    env_file:
+      - .env
+    environment:
+      - MEILISEARCH_HOST=http://meilisearch:7700
+  meilisearch:
+    image: getmeili/meilisearch:latest
+    restart: always
+    ports:
+      - 7700:7700
+  web:
+    image: local/web
+    depends_on:
+      - meilisearch
+    build:
+      dockerfile: Dockerfile
+      context: ./web
+    ports:
+      - 3000:80
